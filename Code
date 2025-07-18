@@ -1,0 +1,350 @@
+#include <lpc214x.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+// Pin Definitions
+#define ROW_MASK (0x0F << 19) // P0.19 to P0.22 for rows
+#define COL_MASK (0x07 << 16) // P0.16 to P0.18 for columns
+#define GREEN_LED_PIN (1 << 25) // P0.25 for green LED
+#define RED_LED_PIN (1 << 26)   // P0.26 for red LED
+#define BUZZER_PIN (1 << 27)    // P0.27 for buzzer
+#define SPEAKER_PIN (1 << 0)    // P0.0 for speaker
+
+// Function Prototypes
+void Timer0_Init(void);
+void LCD_INIT(void);
+void LCD_CMD(char command);
+void LCD_STRING(char *msg);
+void LCD_CHAR(char msg);
+char read_keypad(void);
+uint8_t random_number(void);
+char get_input_with_timeout(void);
+void delay_ms(uint16_t ms);
+void control_led(uint8_t led, uint8_t state);
+void control_buzzer(uint8_t state, uint16_t duration);
+void play_speaker_pattern(uint8_t pattern_type);
+int is_wicket_chance(uint8_t score, uint8_t random_num);
+void start_timer(void);
+uint32_t get_elapsed_time(void);
+
+// Global variables
+uint8_t total_score = 0;
+uint8_t total_wickets = 0;
+uint32_t start_time = 0;
+uint8_t over_limit = 0; // Declare over_limit globally
+
+// Timer0 Initialization for randomness
+void Timer0_Init(void) {
+    T0TCR = 0x02;            // Reset Timer0
+    T0PR = 60000 - 1;        // Prescaler value for 1ms ticks (assuming Cclk = 60MHz)
+    T0TCR = 0x01;            // Start Timer0
+}
+
+void start_timer(void) {
+    start_time = T0TC;
+}
+
+uint32_t get_elapsed_time(void) {
+    return (T0TC - start_time) / 1000; // Convert ticks to seconds
+}
+
+uint8_t random_number(void) {
+    uint8_t chance = T0TC % 100; // Generate a number between 0-99
+
+    if (chance < 33) {
+        return 6; // 33.33% probability for 6
+    } else if (chance < 50) {
+        return 4; // 16.666% probability for 4
+    } else if (chance < 67) {
+        return 5; // 16.666% probability for 5
+    }
+
+    // For the remaining probabilities, generate a number between 1-3
+    return (T0TC % 3) + 1; // Generate numbers 1 to 3
+}
+
+int is_wicket_chance(uint8_t score, uint8_t random_num) {
+    // If the user's score matches the randomly generated score, it's a wicket
+    if (score == random_num) {
+        return 1; // Wicket occurs
+    }
+    return 0; // No wicket
+}
+
+char get_input_with_timeout(void) {
+    uint16_t timer = 0;
+    char key;
+
+    while (timer < 10000) { // 10-second timeout
+        key = read_keypad();
+        if (key) return key; // Return key if pressed
+        delay_ms(1);         // 1ms delay to simulate polling interval
+        timer++;
+    }
+    return '0'; // Default input is 0 after timeout
+}
+
+void LCD_CMD(char command) {
+    IO0PIN = ((IO0PIN & 0xFFFF00FF) | (command << 8));
+    IO0SET = 0x00000040; // Set EN = 1
+    IO0CLR = 0x00000030; // Clear RS and RW
+    delay_ms(2);
+    IO0CLR = 0x00000040; // Clear EN
+    delay_ms(2);
+}
+
+void LCD_INIT(void) {
+    IO0DIR = 0x0000FFF0;
+    delay_ms(20);
+    LCD_CMD(0x38);
+    LCD_CMD(0x0C);
+    LCD_CMD(0x06);
+    LCD_CMD(0x01);
+    LCD_CMD(0x80);
+}
+
+void LCD_STRING(char *msg) {
+    while (*msg) {
+        LCD_CHAR(*msg++);
+    }
+}
+
+void LCD_CHAR(char msg) {
+    IO0PIN = ((IO0PIN & 0xFFFF00FF) | (msg << 8));
+    IO0SET = 0x00000050;
+    IO0CLR = 0x00000020;
+    delay_ms(2);
+    IO0CLR = 0x00000040;
+    delay_ms(2);
+}
+
+char read_keypad(void) {
+    char row, col;
+    char keypad[4][3] = {
+        {'3', '2', '1'},
+        {'6', '5', '4'},
+        {'9', '8', '7'},
+        {'#', '0', '*'}
+    };
+    unsigned int col_status;
+
+    for (row = 0; row < 4; row++) {
+        IO0CLR = ROW_MASK;
+        IO0SET = (1 << (19 + row));
+        col_status = (IO0PIN & COL_MASK) >> 16;
+
+        for (col = 0; col < 3; col++) {
+            if (col_status & (1 << col)) {
+                return keypad[row][col];
+            }
+        }
+    }
+    return 0;
+}
+
+void delay_ms(uint16_t ms) {
+    volatile uint16_t i, j;
+    for (i = 0; i < ms; i++) {
+        for (j = 0; j < 6000; j++); // Approximate 1ms delay
+    }
+}
+
+void control_led(uint8_t led, uint8_t state) {
+    if (led == 1) { // Green LED
+        if (state == 1) {
+            IO0SET = GREEN_LED_PIN; // Turn on green LED
+        } else {
+            IO0CLR = GREEN_LED_PIN; // Turn off green LED
+        }
+    } else if (led == 2) { // Red LED
+        if (state == 1) {
+            IO0SET = RED_LED_PIN; // Turn on red LED
+        } else {
+            IO0CLR = RED_LED_PIN; // Turn off red LED
+        }
+    }
+}
+
+void control_buzzer(uint8_t state, uint16_t duration) {
+    if (state == 1) {
+        IO0SET = BUZZER_PIN; // Turn on buzzer
+        delay_ms(duration);
+        IO0CLR = BUZZER_PIN; // Turn off buzzer
+    } else {
+        IO0CLR = BUZZER_PIN; // Ensure buzzer is off
+    }
+}
+
+void play_speaker_pattern(uint8_t pattern_type) {
+    int i; // Declare loop variable
+    switch (pattern_type) {
+        case 1: // Wicket: Long buzz for 4 seconds
+            IO0SET = SPEAKER_PIN;
+            delay_ms(4000);
+            IO0CLR = SPEAKER_PIN;
+            break;
+        case 2: // Milestone 50: Chirp buzz for 5 seconds
+            for (i = 0; i < 10; i++) { // Use declared loop variable
+                IO0SET = SPEAKER_PIN;
+                delay_ms(250);
+                IO0CLR = SPEAKER_PIN;
+                delay_ms(250);
+            }
+            break;
+        case 3: // Century: Equispaced buzz for 6 seconds
+            for (i = 0; i < 6; i++) { // Use declared loop variable
+                IO0SET = SPEAKER_PIN;
+                delay_ms(500);
+                IO0CLR = SPEAKER_PIN;
+                delay_ms(500);
+            }
+            break;
+        default:
+            IO0CLR = SPEAKER_PIN; // Default to off
+            break;
+    }
+}
+int main(void) {
+    uint8_t over = 1, ball;
+    char user_input;
+    char buffer[16];
+    uint8_t user_score = 0;
+    uint8_t user_score_display = 0;
+    uint8_t max_wickets = 0;
+    uint32_t time_limit = 0;
+    char mode;
+    uint8_t system_score;
+    uint8_t milestone_50_flag = 0; // Milestone flag for 50 runs
+    uint8_t milestone_100_flag = 0; // Milestone flag for 100 runs
+
+    LCD_INIT();
+    IO0DIR |= ROW_MASK;  // Rows as output
+    IO0DIR &= ~COL_MASK; // Columns as input
+    IO0DIR |= GREEN_LED_PIN | RED_LED_PIN; // Configure LED pins as output
+    IO0DIR |= BUZZER_PIN | SPEAKER_PIN; // Configure buzzer and speaker pins as output
+    Timer0_Init();
+
+    // Select Game Mode
+    LCD_CMD(0x01); // Clear screen
+    LCD_STRING("Select Mode:");
+    LCD_CMD(0xC0); // Move to second line
+    LCD_STRING("1-T20 2-ODI 3-Test");
+
+    // Wait for valid input
+    while (1) {
+        mode = get_input_with_timeout();
+
+        if (mode == '1') {
+            LCD_CMD(0x01); // Clear display
+            LCD_STRING("Mode: T20");
+            max_wickets = 2;
+            time_limit = 120; // 2 minutes
+            over_limit = 3;
+            break;
+        } else if (mode == '2') {
+            LCD_CMD(0x01); // Clear display
+            LCD_STRING("Mode: ODI");
+            max_wickets = 5;
+            time_limit = 240; // 4 minutes
+            over_limit = 5;
+            break;
+        } else if (mode == '3') {
+            LCD_CMD(0x01); // Clear display
+            LCD_STRING("Mode: Test");
+            max_wickets = 10;
+            time_limit = 480; // 8 minutes
+            over_limit = 10;
+            break;
+        } else {
+            LCD_CMD(0x01); // Clear display
+            LCD_STRING("Invalid Mode");
+            delay_ms(2000); // Show invalid mode message for 2 seconds
+            LCD_CMD(0x01); // Clear display
+            LCD_STRING("Select Mode:");
+            LCD_CMD(0xC0); // Move to second line
+            LCD_STRING("1-T20 2-ODI 3-Test");
+        }
+    }
+    delay_ms(2000);
+    start_timer();
+
+    while (over <= over_limit) { // Simulate overs based on selected mode
+        for (ball = 1; ball <= 6; ball++) { // Each over has 6 balls
+            if (get_elapsed_time() >= time_limit || total_wickets >= max_wickets) {
+                goto end_game; // End the game
+            }
+
+            system_score = random_number();
+
+            LCD_CMD(0x01); // Clear display
+            sprintf(buffer, "Over:%d Ball:%d", over, ball);
+            LCD_STRING(buffer); // Display over and ball number
+
+            LCD_CMD(0xC0); // Move to second line
+            LCD_STRING("Input: ");
+            user_input = get_input_with_timeout();
+
+            if (user_input < '0' || user_input > '6') {
+                user_input = '0'; // Handle invalid input
+            }
+
+            user_score = user_input - '0'; // Assign the input value to user_score
+            user_score_display = user_score; // Store the original user score for display
+
+            // Check for wicket chance
+            if (is_wicket_chance(user_score, system_score)) {
+                total_wickets++;  // Increment wicket count
+                control_led(2, 1); // Red LED for wicket
+                delay_ms(500);
+                control_led(2, 0); // Turn off red LED
+                play_speaker_pattern(1); // Play long buzz for wicket
+            } else if (user_score != 0) {
+                total_score += user_score; // Add score for non-wicket
+
+                if (user_score == 6) {
+                    control_led(1, 1); // Green LED for six
+                    delay_ms(1000);
+                    control_led(1, 0); // Turn off green LED
+                }
+
+                // Check for milestones
+                if (total_score >= 50 && milestone_50_flag == 0) {
+                    milestone_50_flag = 1;
+                    play_speaker_pattern(2); // Play chirp buzz for milestone 50
+                }
+                if (total_score >= 100 && milestone_100_flag == 0) {
+                    milestone_100_flag = 1;
+                    play_speaker_pattern(3); // Play equispaced buzz for century
+                }
+            }
+
+            // Display system and user scores
+            LCD_CMD(0x01);
+            sprintf(buffer, "Sys:%d You:%d", system_score, user_score_display);
+            LCD_STRING(buffer);
+            LCD_CMD(0xC0);
+            sprintf(buffer, "Score:%d/%d", total_score, total_wickets);
+            LCD_STRING(buffer);
+            delay_ms(500);
+        }
+
+        // End of over
+        LCD_CMD(0x01);
+        sprintf(buffer, "Over %d End", over);
+        LCD_STRING(buffer);
+        delay_ms(2000);
+
+        over++;
+    }
+
+end_game:
+    // Match End
+    LCD_CMD(0x01);
+    LCD_STRING("Match Over");
+    LCD_CMD(0xC0);
+    sprintf(buffer, "Score:%d/%d", total_score, total_wickets); // Final score
+    LCD_STRING(buffer);
+
+    while (1); // Stop execution
+}
